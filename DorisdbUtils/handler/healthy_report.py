@@ -10,7 +10,7 @@ sys.setdefaultencoding('utf8')
 
 class BaseCheck(object):
 
-    def __init__(self, user="", host="", db="", port=9030, passwd=""):
+    def __init__(self, user="", host="", db="", passwd="", port=9030):
         self.db = db_hanlder.DbHanlder(user, passwd=passwd,
                                        host=host, db=db, port=port)
         self.db.open()
@@ -33,6 +33,8 @@ class BaseCheck(object):
     def get_table_info(self, table):
         sql = "show partitions from %s;" % table
         info = self.db.query(sql)[0]
+        if "B" not in info[-2]:
+            return {}
         data_size = info[-2].split()
         return {
             "Buckets": info[9],
@@ -40,14 +42,20 @@ class BaseCheck(object):
         }
 
     def table_healthy(self):
-        tables_info = {}
+        tables_info = []
         tables = self.get_alltables()
         for table in tables:
             if 'hive_demo_jd' in table[0]:
                 continue
-            tables_info[table[0]] = self.get_table_info(table[0])
-            tables_info[table[0]]['point'] = \
-                self.get_table_info(table[0])["DataSize"] / int(self.get_table_info(table[0])["Buckets"])
+            if not self.get_table_info(table[0]):
+                continue
+            tables_info.append({
+                "name": table[0],
+                "DataSize": self.get_table_info(table[0])["DataSize"],
+                "Buckets": self.get_table_info(table[0])["Buckets"],
+                "point": self.get_table_info(table[0])["DataSize"] / int(self.get_table_info(table[0])["Buckets"])
+            })
+
         return tables_info
 
 
@@ -80,15 +88,15 @@ def generate_template(tables):
     mail_tail = '</body></html>'
     table_header = generate_mail_table_header()
     mail_body = "<tbody>"
-    for key, value in tables.items():
+    for table in tables:
         mail_body += "<tr>"
-        mail_body += "<td align='left'>" + key + "</td>"
-        mail_body += "<td align='left'>" + value['Buckets'] + "</td>"
-        mail_body += "<td align='left'>" + str(value['DataSize']) + "</td>"
-        if value['point'] < 1:
-            mail_body += "<td align='left' bgcolor='red'>" + str(value['point']) + "</td>"
+        mail_body += "<td align='left'>" + table['name'] + "</td>"
+        mail_body += "<td align='left'>" + table['Buckets'] + "</td>"
+        mail_body += "<td align='left'>" + str(table['DataSize']) + "</td>"
+        if table['point'] < 1 or table['point'] > 10:
+            mail_body += "<td align='left' bgcolor='red'>" + str(table['point']) + "</td>"
         else:
-            mail_body += "<td align='left'>" + str(value['point']) + "</td>"
+            mail_body += "<td align='left'>" + str(table['point']) + "</td>"
         mail_body += "</tr>"
     mail_body += '</tbody>'
     mail_content = mail_header + mail_title + table_header + mail_body + mail_tail
@@ -103,9 +111,10 @@ def generate_mail_table_header():
 
 if __name__ == "__main__":
     #收件人
-    mail = mail.Sendmail(['xxx'])
+    mail = mail.Sendmail(['xxx@xxx.com'])
     #DorisDB相关配置
-    base_check = BaseCheck(user="$user", host="", db="", port=$port, passwd="")
-    tables_info = base_check.table_healthy()
+    base_check = BaseCheck(user="xxx", host="x.x.x.x", db="xxx", port=9030, passwd="")
+    tables = base_check.table_healthy()
+    tables_info = sorted(tables, key=lambda i: i['point'])
     mail_content, mail_subject = generate_template(tables_info)
     mail.send_mail(mail_content, mail_subject)
