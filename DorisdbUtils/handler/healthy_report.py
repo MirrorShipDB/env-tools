@@ -26,19 +26,29 @@ class BaseCheck(object):
         }
         return capacity_dict[item]
 
+    def get_alldbs(self):
+        sql = "show databases;"
+        return self.db.query(sql)
+
     def get_alltables(self):
         sql = "show tables;"
         return self.db.query(sql)
 
     def get_table_info(self, table):
+        buckets = 0
+        data_size = 0
         sql = "show partitions from %s;" % table
-        info = self.db.query(sql)[0]
-        if "B" not in info[-2]:
-            return {}
-        data_size = info[-2].split()
+        infos = self.db.query(sql)
+        for line in infos:
+            if "B" not in line[-2]:
+                continue
+            buckets += line[9]
+            data_size_split = line[-2].split()
+            data_size += float(data_size_split[0])*(self.convert(data_size_split[1]))
+
         return {
-            "Buckets": info[9],
-            "DataSize": float(data_size[0])*(self.convert(data_size[1]))
+            "Buckets": buckets,
+            "DataSize": data_size
         }
 
     def table_healthy(self):
@@ -110,10 +120,11 @@ def generate_mail_table_header():
     return table_header
 
 if __name__ == "__main__":
+    db = sys.argv[0]
     #收件人
     mail = mail.Sendmail(['xxx@xxx.com'])
     #DorisDB相关配置
-    base_check = BaseCheck(user="xxx", host="x.x.x.x", db="xxx", port=9030, passwd="")
+    base_check = BaseCheck(user="xxx", host="x.x.x.x", db=db, port=9030, passwd="")
     tables = base_check.table_healthy()
     tables_info = sorted(tables, key=lambda i: i['point'])
     mail_content, mail_subject = generate_template(tables_info)
