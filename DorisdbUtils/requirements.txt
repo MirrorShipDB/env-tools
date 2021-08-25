@@ -1,1 +1,5 @@
+backports.functools-lru-cache==1.6.4
+configparser==4.0.2
+prettytable==1.0.1
 PyMySQL==0.10.1
+wcwidth==0.2.5

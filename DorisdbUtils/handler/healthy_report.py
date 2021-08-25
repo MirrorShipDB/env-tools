@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 
 import datetime
-from utils import mail
+#from utils import mail
 import db_hanlder
+from prettytable import PrettyTable
+from utils import config_parser
 import sys
 reload(sys)
 sys.setdefaultencoding('utf8')
@@ -11,6 +13,7 @@ sys.setdefaultencoding('utf8')
 class BaseCheck(object):
 
     def __init__(self, user="", host="", db="", passwd="", port=9030):
+        self.table_black_list = []
         self.db = db_hanlder.DbHanlder(user, passwd=passwd,
                                        host=host, db=db, port=port)
         self.db.open()
@@ -31,8 +34,13 @@ class BaseCheck(object):
         return self.db.query(sql)
 
     def get_alltables(self):
-        sql = "show tables;"
-        return self.db.query(sql)
+        valid_tables = []
+        sql = "show table status;"
+        tables_info = self.db.query(sql)
+        for table in tables_info:
+            if table[-1] == "OLAP":
+                valid_tables.append(table[0])
+        return valid_tables
 
     def get_table_info(self, table):
         buckets = 0
@@ -42,10 +50,9 @@ class BaseCheck(object):
         for line in infos:
             if "B" not in line[-2]:
                 continue
-            buckets += line[9]
+            buckets += int(line[9])
             data_size_split = line[-2].split()
             data_size += float(data_size_split[0])*(self.convert(data_size_split[1]))
-
         return {
             "Buckets": buckets,
             "DataSize": data_size
@@ -55,15 +62,17 @@ class BaseCheck(object):
         tables_info = []
         tables = self.get_alltables()
         for table in tables:
-            if 'hive_demo_jd' in table[0]:
+            if table in self.table_black_list:
                 continue
-            if not self.get_table_info(table[0]):
+            if not self.get_table_info(table):
+                continue
+            if not self.get_table_info(table)["Buckets"]:
                 continue
             tables_info.append({
-                "name": table[0],
-                "DataSize": self.get_table_info(table[0])["DataSize"],
-                "Buckets": self.get_table_info(table[0])["Buckets"],
-                "point": self.get_table_info(table[0])["DataSize"] / int(self.get_table_info(table[0])["Buckets"])
+                "name": table,
+                "DataSize": self.get_table_info(table)["DataSize"],
+                "Buckets": self.get_table_info(table)["Buckets"],
+                "point": self.get_table_info(table)["DataSize"] / int(self.get_table_info(table)["Buckets"])
             })
 
         return tables_info
@@ -120,12 +129,18 @@ def generate_mail_table_header():
     return table_header
 
 if __name__ == "__main__":
-    db = sys.argv[0]
+    config = config_parser.Parser("../config.ini")
     #收件人
-    mail = mail.Sendmail(['xxx@xxx.com'])
+    # mail = mail.Sendmail(['xxx@xxx.com'])
     #DorisDB相关配置
-    base_check = BaseCheck(user="xxx", host="x.x.x.x", db=db, port=9030, passwd="")
-    tables = base_check.table_healthy()
-    tables_info = sorted(tables, key=lambda i: i['point'])
-    mail_content, mail_subject = generate_template(tables_info)
-    mail.send_mail(mail_content, mail_subject)
+    table_format = PrettyTable(['库名', '表名', '表数据量(/GB)', 'Tablet数', '单Tablet数据量(/GB)'])
+    for database in config['databases'].split(','):
+        base_check = BaseCheck(user=config['user'], host=config['fe_host'],
+                               db=database, port=int(config['port']), passwd=config['password'])
+        tables = base_check.table_healthy()
+        tables_info = sorted(tables, key=lambda i: i['Buckets'], reverse=True)
+        for table in tables_info:
+            table_format.add_row([database, table['name'], table['DataSize'], table['Buckets'], table['point']])
+    print table_format
+    # mail_content, mail_subject = generate_template(tables_info)
+    # mail.send_mail(mail_content, mail_subject)
