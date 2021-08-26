@@ -1,21 +1,28 @@
 # -*- coding: utf-8 -*-
 
+
+import os
+import sys
 import datetime
-#from utils import mail
+from utils import send_mail
 import db_hanlder
 from prettytable import PrettyTable
 from utils import config_parser
-import sys
+
 reload(sys)
 sys.setdefaultencoding('utf8')
 
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+#用于转换GB到MB
+scale = 1024
 
 class BaseCheck(object):
 
-    def __init__(self, user="", host="", db="", passwd="", port=9030):
+    def __init__(self, host="", port=9030, user="", passwd="", db=""):
         self.table_black_list = []
-        self.db = db_hanlder.DbHanlder(user, passwd=passwd,
-                                       host=host, db=db, port=port)
+        self.db = db_hanlder.DbHanlder(host=host, port=port,
+                                       user=user, passwd=passwd, db=db)
         self.db.open()
 
     def convert(self, item):
@@ -68,17 +75,20 @@ class BaseCheck(object):
                 continue
             if not self.get_table_info(table)["Buckets"]:
                 continue
+            data_size = self.get_table_info(table)["DataSize"]
+            buckets = self.get_table_info(table)["Buckets"]
             tables_info.append({
                 "name": table,
-                "DataSize": self.get_table_info(table)["DataSize"],
-                "Buckets": self.get_table_info(table)["Buckets"],
-                "point": self.get_table_info(table)["DataSize"] / int(self.get_table_info(table)["Buckets"])
+                "DataSize": data_size,
+                "Buckets": buckets,
+                # 转换GB为MB
+                "point": round(data_size/buckets*scale, 2)
             })
 
         return tables_info
 
 
-def generate_template(tables):
+def generate_template(msg):
     mail_content = ""
     CSS_STYLE = """<style type="text/css">
                      #avail {
@@ -107,16 +117,18 @@ def generate_template(tables):
     mail_tail = '</body></html>'
     table_header = generate_mail_table_header()
     mail_body = "<tbody>"
-    for table in tables:
-        mail_body += "<tr>"
-        mail_body += "<td align='left'>" + table['name'] + "</td>"
-        mail_body += "<td align='left'>" + table['Buckets'] + "</td>"
-        mail_body += "<td align='left'>" + str(table['DataSize']) + "</td>"
-        if table['point'] < 1 or table['point'] > 10:
-            mail_body += "<td align='left' bgcolor='red'>" + str(table['point']) + "</td>"
-        else:
-            mail_body += "<td align='left'>" + str(table['point']) + "</td>"
-        mail_body += "</tr>"
+    for database, tables in msg.items():
+        for table in tables:
+            mail_body += "<tr>"
+            mail_body += "<td align='left'>" + database + "</td>"
+            mail_body += "<td align='left'>" + table['name'] + "</td>"
+            mail_body += "<td align='left'>" + str(table['Buckets']) + "</td>"
+            mail_body += "<td align='left'>" + str(table['DataSize']) + "</td>"
+            if table['point'] < scale or table['point'] > 10*scale:
+                mail_body += "<td align='left' bgcolor='red'>" + str(table['point']) + "</td>"
+            else:
+                mail_body += "<td align='left'>" + str(table['point']) + "</td>"
+            mail_body += "</tr>"
     mail_body += '</tbody>'
     mail_content = mail_header + mail_title + table_header + mail_body + mail_tail
     return (mail_content, mail_subject)
@@ -124,23 +136,39 @@ def generate_template(tables):
 def generate_mail_table_header():
     table_header = '''<table id='avail' cellpadding="1" cellspacing="1" border="1">'''
     table_header += '</tr><tr>'
-    table_header += '<th>Table</th><th>Bucket数</th><th>表数据量(/GB)</th><th>单Bucket数据量(/GB)</th>'
+    table_header += '<th>DatabaseTable</th><th>Table</th><th>Bucket数</th><th>表数据量(/GB)</th><th>单Bucket数据量(/MB)</th>'
     table_header += '</tr>'
     return table_header
 
-if __name__ == "__main__":
+def mailer():
     config = config_parser.Parser("../config.ini")
+    mail_config = config['mail']
+    dorisdb_config = config['common']
     #收件人
-    # mail = mail.Sendmail(['xxx@xxx.com'])
-    #DorisDB相关配置
-    table_format = PrettyTable(['库名', '表名', '表数据量(/GB)', 'Tablet数', '单Tablet数据量(/GB)'])
+    mail = send_mail.MailSender(mail_config['send_user'],
+                                mail_config['send_user_passwd'], mail_config['receiver'].split(','))
+    tables_info = {}
+    for database in dorisdb_config['databases'].split(','):
+        base_check = BaseCheck(host=dorisdb_config['fe_host'], port=int(dorisdb_config['port']),
+                               user=dorisdb_config['user'], passwd=dorisdb_config['password'], db=database)
+        tables = base_check.table_healthy()
+        tables_msg = sorted(tables, key=lambda i: i['Buckets'], reverse=True)
+        tables_info[database] = tables_msg
+    mail_content, mail_subject = generate_template(tables_info)
+    mail.send_mail(mail_content, mail_subject)
+
+def print_table():
+    config = config_parser.Parser("../config.ini")['common']
+    table_format = PrettyTable(['库名', '表名', '表数据量(/GB)', 'Tablet数', '单Tablet数据量(/MB)'])
     for database in config['databases'].split(','):
         base_check = BaseCheck(user=config['user'], host=config['fe_host'],
                                db=database, port=int(config['port']), passwd=config['password'])
         tables = base_check.table_healthy()
         tables_info = sorted(tables, key=lambda i: i['Buckets'], reverse=True)
         for table in tables_info:
-            table_format.add_row([database, table['name'], table['DataSize'], table['Buckets'], table['point']])
+            table_format.add_row([database, table['name'], table['DataSize'],
+                                  table['Buckets'], table['point']])
     print table_format
-    # mail_content, mail_subject = generate_template(tables_info)
-    # mail.send_mail(mail_content, mail_subject)
+
+if __name__ == "__main__":
+    print_table()

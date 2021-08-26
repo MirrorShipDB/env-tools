@@ -54,7 +54,6 @@ class DbHanlder():
         except Exception as e:
             self.currentConn.rollback()
             self.logger.error(e.message)
-        self.close()
         return data
 
 
